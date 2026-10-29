@@ -1,0 +1,43 @@
+# AV-Forensics git ignore
+
+# Dataset and model weights (never commit these!)
+*.pth
+*.h5
+*.pkl
+*.npy
+*.npz
+FakeAVCeleb_Dataset/
+avforensics_cache/
+avforensics_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env.local
+*.local
+
+# IDEs
+.vscode/
+.idea/
+*.DS_Store
+
+# Temp / reports
+/tmp/
+*.log
+avforensics_reports/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
