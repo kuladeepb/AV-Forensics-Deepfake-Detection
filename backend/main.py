@@ -3,9 +3,17 @@ main.py  –  AV-Forensics Backend FastAPI application
 """
 
 from __future__ import annotations
-import hashlib, logging, os, shutil, tempfile, time, uuid
+import hashlib, logging, os, shutil, sys, tempfile, time, uuid
 from pathlib import Path
 from typing import Any, Dict
+
+_BACKEND_DIR = Path(__file__).resolve().parent
+_REPO_DIR = _BACKEND_DIR.parent
+_ML_DIR = _REPO_DIR / "ml"
+
+for p in [str(_BACKEND_DIR), str(_ML_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,10 +25,16 @@ try:
         MAX_DURATION_SEC, MAX_UPLOAD_MB, MOCK_MODEL,
     )
 except ImportError:
-    from config import (
-        ALLOWED_ORIGINS, APP_VERSION, CACHE_TTL_SEC,
-        MAX_DURATION_SEC, MAX_UPLOAD_MB, MOCK_MODEL,
-    )
+    try:
+        from backend.backend_config import (
+            ALLOWED_ORIGINS, APP_VERSION, CACHE_TTL_SEC,
+            MAX_DURATION_SEC, MAX_UPLOAD_MB, MOCK_MODEL,
+        )
+    except ImportError:
+        from config import (
+            ALLOWED_ORIGINS, APP_VERSION, CACHE_TTL_SEC,
+            MAX_DURATION_SEC, MAX_UPLOAD_MB, MOCK_MODEL,
+        )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
 log = logging.getLogger(__name__)
@@ -122,9 +136,10 @@ async def analyze(file: UploadFile = File(...)):
             except ValueError:
                 pass   # ffprobe failed → continue
 
-        # ── Inference ─────────────────────────────────────────────────────
+        # ── Inference (run in worker thread so event loop is not blocked) ─────
+        import asyncio
         from inference import analyze_video
-        result = analyze_video(tmp_path, file.filename or "upload")
+        result = await asyncio.to_thread(analyze_video, tmp_path, file.filename or "upload")
 
     except HTTPException:
         raise

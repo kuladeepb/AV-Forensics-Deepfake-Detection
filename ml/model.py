@@ -138,7 +138,8 @@ class AudioEncoder(nn.Module):
                     for p in layer.parameters():
                         p.requires_grad_(False)
 
-        n_layers = self.backbone.config.num_hidden_layers + 1  # +1 for embedding layer
+        # Use the hidden layer count + 1 for embedding layer (13 in mHuBERT)
+        n_layers = getattr(self.backbone.config, "num_hidden_layers", 12) + 1
         hidden   = self.backbone.config.hidden_size
         self.layer_weights = nn.Parameter(torch.ones(n_layers) / n_layers)
         self.proj = nn.Sequential(
@@ -152,9 +153,17 @@ class AudioEncoder(nn.Module):
         Returns: (B, Ta, embed_dim)
         """
         out = self.backbone(input_values=input_values)
-        # hidden_states: tuple of (n_layers+1) tensors each (B, Ta, hidden)
-        hidden = torch.stack(out.hidden_states, dim=1)   # (B, n_layers, Ta, hidden)
-        w = F.softmax(self.layer_weights, dim=0)         # (n_layers,)
+        # hidden_states: tuple of tensors each (B, Ta, hidden)
+        hidden = torch.stack(out.hidden_states, dim=1)   # (B, K, Ta, hidden)
+        K = hidden.shape[1]
+        if self.layer_weights.shape[0] != K:
+            # Handle variable hidden state count across HuggingFace model architectures
+            if self.layer_weights.shape[0] >= K:
+                w = F.softmax(self.layer_weights[:K], dim=0)
+            else:
+                w = F.softmax(F.pad(self.layer_weights, (0, K - self.layer_weights.shape[0])), dim=0)
+        else:
+            w = F.softmax(self.layer_weights, dim=0)
         fused = (hidden * w[None, :, None, None]).sum(1) # (B, Ta, hidden)
         return self.proj(fused)                          # (B, Ta, embed_dim)
 

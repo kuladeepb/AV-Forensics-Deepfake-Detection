@@ -11,6 +11,14 @@ export default function Footer() {
           className="underline hover:text-gray-300"
         >
           FakeAVCeleb
+        </a> ·{' '}
+        <a
+          href="https://github.com/kuladeepb/AV-Forensics-Deepfake-Detection"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-gray-300"
+        >
+          GitHub Repository
         </a>
       </p>
       <p className="mt-1 text-gray-600">

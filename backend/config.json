@@ -1,0 +1,23 @@
+{
+  "audio_model": "utter-project/mHuBERT-147",
+  "embed_dim": 256,
+  "n_frames": 32,
+  "img_size": 96,
+  "sr": 16000,
+  "audio_len": 64000,
+  "window_sec": 4.0,
+  "stride_sec": 1.0,
+  "fake_threshold": 0.50,
+  "classes": [
+    "RVRA",
+    "RVFA",
+    "FVRA",
+    "FVFA"
+  ],
+  "metrics": {
+    "test_acc_bin": 0.987,
+    "test_roc_auc": 0.7699,
+    "test_macro_f1": 0.4967,
+    "test_4class_acc": 0.9749
+  }
+}

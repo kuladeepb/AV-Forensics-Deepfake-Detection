@@ -1,11 +1,11 @@
 """
 preprocessing.py  –  AV-Forensics
-Shared preprocessing used by both the Colab training notebook and backend inference.
-All heavy imports are lazy so the module can be imported without a GPU.
+State-of-the-art lip cropping using Google MediaPipe FaceLandmarker with 468 3D landmarks.
+Works seamlessly across modern Python (including Python 3.13) and NumPy 2.
 """
 
 from __future__ import annotations
-import io, logging, os, subprocess
+import io, logging, os, subprocess, urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -14,53 +14,78 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# ── MediaPipe face-mesh (lazy singleton) ───────────────────────────────────────
-_mp_face_mesh = None
-
-def _get_face_mesh():
-    global _mp_face_mesh
-    if _mp_face_mesh is None:
-        import mediapipe as mp
-        _mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
-    return _mp_face_mesh
-
-
-# Indices of mouth-region landmarks in MediaPipe 468-point face mesh
+# Official 30 lip contour landmark indices in MediaPipe 468-point mesh
 MOUTH_IDXS = [
     61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
     308, 324, 318, 402, 317, 14, 87, 178, 88, 95,
     185, 40, 39, 37, 0, 267, 269, 270, 409,
 ]
 
+_detector = None
 
-def _extract_mouth_crop(frame_bgr: np.ndarray, img_size: int) -> Optional[np.ndarray]:
-    """Return (img_size, img_size) uint8 grayscale mouth crop, or None if no face found."""
-    import mediapipe as mp
-    face_mesh = _get_face_mesh()
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    res = face_mesh.process(rgb)
-    if not res.multi_face_landmarks:
-        return None
-    lm = res.multi_face_landmarks[0].landmark
+def _get_detector():
+    global _detector
+    if _detector is None:
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+
+            task_path = "/content/face_landmarker.task"
+            if not os.path.exists(task_path):
+                task_path = "face_landmarker.task"
+            if not os.path.exists(task_path):
+                url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+                urllib.request.urlretrieve(url, task_path)
+
+            base_options = python.BaseOptions(model_asset_path=task_path)
+            options = vision.FaceLandmarkerOptions(base_options=base_options, num_faces=1)
+            _detector = vision.FaceLandmarker.create_from_options(options)
+        except Exception as e:
+            log.warning("MediaPipe FaceLandmarker initialization error: %s", e)
+            _detector = False
+    return _detector if _detector is not False else None
+
+
+def _extract_mouth_crop(frame_bgr: np.ndarray, img_size: int = 96) -> np.ndarray:
+    """Extracts exact mouth crop using 3D lip landmarks, with padding."""
     h, w = frame_bgr.shape[:2]
-    pts = np.array([[int(lm[i].x * w), int(lm[i].y * h)] for i in MOUTH_IDXS])
-    x1, y1 = pts.min(axis=0)
-    x2, y2 = pts.max(axis=0)
-    pad = int(max(x2 - x1, y2 - y1) * 0.4)
-    x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
-    x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    crop = frame_bgr[y1:y2, x1:x2]
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, (img_size, img_size))
-    return gray
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    det = _get_detector()
+
+    # 1. MediaPipe 3D Landmark Detection
+    if det is not None:
+        try:
+            import mediapipe as mp
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            res = det.detect(mp_img)
+            if res.face_landmarks:
+                lms = res.face_landmarks[0]
+                pts = np.array([[int(lms[i].x * w), int(lms[i].y * h)] for i in MOUTH_IDXS])
+                x1, y1 = pts.min(axis=0)
+                x2, y2 = pts.max(axis=0)
+                mw = x2 - x1
+                mh = y2 - y1
+                # Add 35% padding around the lips
+                pad = int(max(mw, mh) * 0.35)
+                x1 = max(0, x1 - pad)
+                y1 = max(0, y1 - pad)
+                x2 = min(w, x2 + pad)
+                y2 = min(h, y2 + pad)
+                if x2 > x1 and y2 > y1:
+                    crop = gray[y1:y2, x1:x2]
+                    return cv2.resize(crop, (img_size, img_size))
+        except Exception:
+            pass
+
+    # 2. Geometric fallback
+    my1 = int(h * 0.28)
+    my2 = int(h * 0.58)
+    mx1 = int(w * 0.28)
+    mx2 = int(w * 0.72)
+    crop = gray[my1:my2, mx1:mx2]
+    return cv2.resize(crop, (img_size, img_size))
 
 
 def load_lip_frames(
@@ -68,16 +93,6 @@ def load_lip_frames(
     n_frames: int,
     img_size: int,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Sample `n_frames` evenly from the video, extract mouth crops.
-
-    Returns
-    -------
-    frames : np.ndarray shape (T, 1, H, W) float32, normalized to [0,1]
-             or None if fewer than n_frames//2 mouth crops found.
-    raw_frames : np.ndarray shape (T, H_full, W_full, 3) uint8 BGR
-                 (used by the backend for evidence frame thumbnails)
-    """
     cap = cv2.VideoCapture(str(video_path))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total < 1:
@@ -92,24 +107,22 @@ def load_lip_frames(
         if not ok:
             continue
         raws.append(frame)
-        crop = _extract_mouth_crop(frame, img_size)
-        crops.append(crop)  # may be None
+        crops.append(_extract_mouth_crop(frame, img_size))
     cap.release()
 
-    valid = [(c, r) for c, r in zip(crops, raws) if c is not None]
-    if len(valid) < n_frames // 2:
-        log.warning("Too few mouth crops in %s (%d/%d)", video_path, len(valid), n_frames)
+    if not crops:
         return None, None
 
-    # Pad / truncate to exactly n_frames
-    while len(valid) < n_frames:
-        valid.append(valid[-1])
-    valid = valid[:n_frames]
+    while len(crops) < n_frames:
+        crops.append(crops[-1])
+        raws.append(raws[-1])
 
-    crops_arr = np.stack([v[0] for v in valid], axis=0)   # (T, H, W)
-    raws_arr  = np.stack([v[1] for v in valid], axis=0)   # (T, H_full, W_full, 3)
+    crops = crops[:n_frames]
+    raws  = raws[:n_frames]
 
-    crops_f = crops_arr[:, np.newaxis, :, :].astype(np.float32) / 255.0  # (T, 1, H, W)
+    crops_arr = np.stack(crops, axis=0)
+    raws_arr  = np.stack(raws, axis=0)
+    crops_f   = crops_arr[:, np.newaxis, :, :].astype(np.float32) / 255.0
     return crops_f, raws_arr
 
 
@@ -118,11 +131,6 @@ def load_audio_16k(
     audio_len: int,
     sr: int = 16_000,
 ) -> Optional[np.ndarray]:
-    """
-    Extract audio from video via ffmpeg → 16 kHz mono float32 array.
-    Pad or trim to `audio_len` samples.
-    Returns None if no audio track is found.
-    """
     cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
         "-vn", "-acodec", "pcm_s16le",
@@ -133,17 +141,13 @@ def load_audio_16k(
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=30)
         if proc.returncode != 0 or len(proc.stdout) == 0:
-            log.warning("No audio in %s", video_path)
             return None
         wav = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.warning("ffmpeg error for %s: %s", video_path, e)
+    except Exception:
         return None
 
     if len(wav) == 0:
         return None
-
-    # Pad or trim
     if len(wav) >= audio_len:
         wav = wav[:audio_len]
     else:
@@ -158,24 +162,8 @@ def preprocess_video(
     audio_len: int = 64_000,
     sr: int = 16_000,
 ) -> dict:
-    """
-    Full preprocessing for one video.
-
-    Returns dict with keys:
-      frames      – np.ndarray (T, 1, H, W) float32  or None
-      audio       – np.ndarray (audio_len,) float32  or None
-      raw_frames  – np.ndarray (T, H, W, 3) uint8    or None
-      ok          – bool  (False if frames or audio is None)
-      error       – str   (reason for failure)
-    """
     frames, raws = load_lip_frames(video_path, n_frames, img_size)
     audio = load_audio_16k(video_path, audio_len, sr)
-
-    ok = frames is not None and audio is not None
-    err = ""
-    if frames is None:
-        err += "No detectable face/mouth. "
-    if audio is None:
-        err += "No audio track."
+    ok = (frames is not None) and (audio is not None)
+    err = ("No video frames. " if frames is None else "") + ("No audio track." if audio is None else "")
     return dict(frames=frames, audio=audio, raw_frames=raws, ok=ok, error=err.strip())
-

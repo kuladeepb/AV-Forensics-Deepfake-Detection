@@ -95,7 +95,18 @@ def train(
         weight_decay=WEIGHT_DECAY,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
-    scaler    = GradScaler(enabled=use_amp and device.type == "cuda")
+    # Modern PyTorch AMP support (cleans up deprecation warnings in PyTorch 2.x+)
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    try:
+        scaler = torch.amp.GradScaler(device_type, enabled=use_amp and device.type == "cuda")
+    except Exception:
+        scaler = GradScaler(enabled=use_amp and device.type == "cuda")
+
+    def get_autocast():
+        try:
+            return torch.amp.autocast(device_type=device_type, enabled=use_amp and device.type == "cuda")
+        except Exception:
+            return autocast(enabled=use_amp and device.type == "cuda")
 
     best_f1    = -1.0
     patience_ctr = 0
@@ -110,7 +121,7 @@ def train(
         for step, batch in enumerate(train_loader):
             frames, audio, y_bin, y_4, y_afake, y_vfake = [b.to(device) for b in batch]
 
-            with autocast(enabled=use_amp and device.type == "cuda"):
+            with get_autocast():
                 out = model(frames, audio)
                 loss, breakdown = compute_total_loss(
                     out, y_bin, y_4, y_afake, y_vfake,

@@ -26,7 +26,7 @@ export default function Navbar() {
           {link('/', 'Analyze')}
           {link('/about', 'About')}
           <a
-            href="https://github.com/your-org/avforensics"
+            href="https://github.com/kuladeepb/AV-Forensics-Deepfake-Detection"
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium text-gray-400 hover:text-white transition-colors"
